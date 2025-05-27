@@ -1,0 +1,16 @@
+[package]
+name = "rdbg"
+version = "0.1.0"
+authors = ["Huseen Munye"]
+edition = "2024"
+description = "Native x86-64 Linux Debugger"
+license = "MIT"
+repository = "https://github.com/hmunye/rdbg"
+
+[profile.dev]
+opt-level = 0
+
+[profile.release]
+opt-level = 3
+
+[dependencies]
