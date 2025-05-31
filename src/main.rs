@@ -1,3 +1,7 @@
+use rdbg::Config;
+
 fn main() {
-    println!("hello, world");
+    let opts = Config::parse();
+
+    dbg!(opts);
 }
