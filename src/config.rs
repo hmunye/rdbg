@@ -10,9 +10,9 @@ use libc::pid_t;
 #[derive(Debug, Default)]
 pub struct Config {
     /// Name of the tracer program (debugger).
-    pub tracer_name: String,
+    pub tracer: String,
     /// Path of the tracee program (program being attached to).
-    pub tracee_path: String,
+    pub tracee: String,
     /// Process ID of the tracee.
     pub pid: pid_t,
 }
@@ -84,19 +84,19 @@ impl Config {
                 // Any argument not beginning with `-` is assumed to be the
                 // tracee program path.
                 if opts.pid == 0 {
-                    opts.tracee_path = arg;
+                    opts.tracee = arg;
                 }
 
                 break;
             }
         }
 
-        if opts.tracee_path.is_empty() && opts.pid == 0 {
+        if opts.tracee.is_empty() && opts.pid == 0 {
             log_err(&program, "program name or pid must be provided");
             print_usage(&program); // Exits
         }
 
-        opts.tracer_name = program;
+        opts.tracer = program;
 
         opts
     }

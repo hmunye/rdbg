@@ -4,7 +4,9 @@
 #![warn(rust_2018_idioms)]
 
 mod config;
+mod error;
 
 pub mod utils;
 
 pub use config::Config;
+pub use error::{Error, Result};

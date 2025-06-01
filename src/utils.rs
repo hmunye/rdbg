@@ -2,6 +2,14 @@
 
 use std::fmt;
 
+/// Helper macro for appending errno to an error message.
+#[macro_export]
+macro_rules! errno {
+    ($($arg:tt)*) => {
+        format!("{}: {}", format!($($arg)*), std::io::Error::last_os_error()).into()
+    };
+}
+
 /// Logs errors to standard error in a structured format.
 pub fn log_err<E>(program: &str, err: E)
 where
