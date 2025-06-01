@@ -4,7 +4,7 @@ use std::{ffi, ptr};
 use rdbg::utils::log_err;
 use rdbg::{Config, Result, errno};
 
-use libc::{PTRACE_ATTACH, PTRACE_TRACEME, c_void, pid_t};
+use libc::{PTRACE_ATTACH, PTRACE_CONT, PTRACE_TRACEME, c_void, pid_t};
 
 fn main() {
     let opts = Config::parse();
@@ -14,20 +14,10 @@ fn main() {
         std::process::exit(1);
     });
 
-    let mut wait_status = 0;
-    let options = 0;
-
-    // Wait for state changes in the child process.
-    if unsafe { libc::waitpid(pid, &mut wait_status, options) } < 0 {
-        log_err(
-            &opts.tracer,
-            format!(
-                "failed to wait on child process: {}",
-                std::io::Error::last_os_error()
-            ),
-        );
+    wait_on_signal(pid).unwrap_or_else(|err| {
+        log_err(&opts.tracer, err);
         std::process::exit(1);
-    }
+    });
 
     let mut stdin = io::stdin().lock();
     let mut buffer = String::with_capacity(128);
@@ -45,9 +35,10 @@ fn main() {
             break;
         }
 
-        handle_command(&buffer).unwrap_or_else(|err| {
+        // Don't include line feed in buffer slice.
+        handle_command(pid, &buffer[..=buffer.len()]).unwrap_or_else(|err| {
             log_err(&opts.tracer, err);
-            std::process::exit(1);
+            // continue loop...
         });
 
         // Need to manually clear buffer.
@@ -55,8 +46,45 @@ fn main() {
     }
 }
 
-fn handle_command(input: &String) -> Result<()> {
-    println!("input: {input}");
+fn handle_command(pid: pid_t, input: &str) -> Result<()> {
+    let command = input.split(' ').next().unwrap();
+
+    if "continue".starts_with(command) {
+        resume(pid)?;
+        wait_on_signal(pid)?;
+    } else {
+        return Err(format!("unrecognized command '{command}'").into());
+    }
+
+    Ok(())
+}
+
+fn resume(pid: pid_t) -> Result<()> {
+    // Restart the stopped tracee process. `addr` argument is ignored.
+    if unsafe {
+        libc::ptrace(
+            PTRACE_CONT,
+            pid,
+            ptr::null_mut::<c_void>(),
+            ptr::null_mut::<c_void>(),
+        )
+    } < 0
+    {
+        return Err(errno!("failed to resume execution for tracee"));
+    }
+
+    Ok(())
+}
+
+fn wait_on_signal(pid: pid_t) -> Result<()> {
+    let mut wait_status = 0;
+    let options = 0;
+
+    // Wait for state changes in the child process.
+    if unsafe { libc::waitpid(pid, &mut wait_status, options) } < 0 {
+        return Err(errno!("failed to wait on tracee"));
+    }
+
     Ok(())
 }
 
@@ -75,7 +103,7 @@ fn attach(pid: pid_t, tracee: String) -> Result<pid_t> {
                 )
             } < 0
             {
-                return Err(errno!("failed to attach to provided pid"));
+                return Err(errno!("failed to attach to provided pid '{}'", pid));
             }
 
             Ok(pid)
