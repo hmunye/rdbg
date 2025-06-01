@@ -1,8 +1,8 @@
 use std::io::{self, BufRead, Write};
 
-use rdbg::core::Process;
+use rdbg::Config;
+use rdbg::core::{Process, handle_command};
 use rdbg::utils::log_err;
-use rdbg::{Config, Result};
 
 fn main() {
     let opts = Config::parse();
@@ -44,17 +44,4 @@ fn main() {
         // Need to manually clear buffer.
         buffer.clear();
     }
-}
-
-fn handle_command(proc: &mut Process, input: &str) -> Result<()> {
-    let command = input.split(' ').next().unwrap();
-
-    if "continue".starts_with(command) {
-        proc.resume()?;
-        proc.wait_on_signal()?;
-    } else {
-        return Err(format!("unrecognized command '{command}'").into());
-    }
-
-    Ok(())
 }
