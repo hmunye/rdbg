@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-/// Macro for appending current errno value to an error message.
+/// Macro for appending current `errno` value to an error message.
 #[macro_export]
 macro_rules! errno {
     ($($arg:tt)*) => {

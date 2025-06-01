@@ -86,7 +86,6 @@ impl Config {
                 if opts.pid == 0 {
                     opts.tracee = arg;
                 }
-
                 break;
             }
         }

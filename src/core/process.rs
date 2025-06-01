@@ -1,5 +1,6 @@
 use std::{ffi, ptr};
 
+use super::Pipe;
 use crate::utils::log_err;
 use crate::{Result, errno};
 
@@ -122,6 +123,11 @@ impl StopReason {
 impl Process {
     /// Begin tracing a program given it's path, returning a new [`Process`].
     pub fn launch(tracee_path: String) -> Result<Self> {
+        // Create pipe before forking to communicate errors between debugger
+        // process and child process. Pass `true` to ensure file descriptors are
+        // automatically closed.
+        let mut channel = Pipe::new(true)?;
+
         let pid = {
             // Creates a new child process by duplicating the debugger process.
             // On success, the PID of the child process is returned in the debugger
@@ -137,6 +143,7 @@ impl Process {
 
         if pid == 0 {
             // Within child process...
+            channel.close_read();
 
             // Indicate that the child process can be traced by the debugger
             // process. `pid`, `addr`, and `data` arguments are ignored.
@@ -149,11 +156,17 @@ impl Process {
                 )
             } < 0
             {
-                return Err(errno!("failed to trace child process"));
+                let msg: String = errno!("failed to trace child process");
+                // TODO: Write could fail...
+                channel.write(msg.as_bytes())?;
+                std::process::exit(1);
             }
 
-            let program_path = ffi::CString::new(tracee_path)
-                .map_err(|err| format!("failed to convert tracee program path: {err}"))?;
+            let program_path = ffi::CString::new(tracee_path).unwrap_or_else(|err| {
+                let msg = format!("failed to convert tracee program path: {err}");
+                let _ = channel.write(msg.as_bytes());
+                std::process::exit(1);
+            });
 
             // Replaces the debugger process image with a new process image.
             // `execlp` searches for the program in the same way as the current
@@ -167,8 +180,27 @@ impl Process {
                 )
             } < 0
             {
-                return Err(errno!("failed to exec within child process"));
+                let msg: String = errno!("failed to trace child process");
+                // TODO: Write could fail...
+                channel.write(msg.as_bytes())?;
+                std::process::exit(1);
             }
+        }
+
+        channel.close_write();
+        let (msg, bytes_read) = channel.read()?;
+        channel.close_read();
+
+        // An error occurred within the child process. Wait for the child process
+        // to terminate, and return it's error message.
+        if bytes_read > 0 {
+            if unsafe { libc::waitpid(pid, ptr::null_mut::<c_int>(), 0) } < 0 {
+                return Err(errno!("failed to wait on tracee"));
+            }
+
+            // Try converting bytes to UTF-8 string.
+            let err = String::from_utf8_lossy(&msg[..bytes_read]);
+            return Err(err.into());
         }
 
         let mut proc = Self {
@@ -289,5 +321,35 @@ impl Drop for Process {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_pid(pid: pid_t) -> bool {
+        // If signal is 0, then no signal is sent, but existence and permission
+        // checks are still performed on the given `pid`.
+        let ret = unsafe { libc::kill(pid, 0) };
+
+        let errno = std::io::Error::last_os_error().to_string();
+
+        ret != -1 && !errno.contains("No such process")
+    }
+
+    #[test]
+    fn process_exists() {
+        let proc = Process::launch("yes".to_string());
+
+        assert!(proc.is_ok());
+        assert!(check_pid(proc.unwrap().pid()));
+    }
+
+    #[test]
+    fn process_not_exists() {
+        let proc = Process::launch("this_program_does_not_exist".to_string());
+
+        assert!(proc.is_err());
     }
 }
