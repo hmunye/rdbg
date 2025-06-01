@@ -2,13 +2,26 @@ use std::{ffi, ptr};
 
 use crate::{Result, errno};
 
-use libc::{PTRACE_ATTACH, PTRACE_CONT, PTRACE_TRACEME, c_void, pid_t};
+use libc::{
+    PTRACE_ATTACH, PTRACE_CONT, PTRACE_TRACEME, WIFEXITED, WIFSIGNALED, WIFSTOPPED, c_void, pid_t,
+};
+
+/// Represents the current state of a [`Process`].
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum ProcessState {
+    Stopped,
+    Running,
+    Exited,
+    Terminated,
+}
 
 /// Represents a tracee [`Process`] the debugger can interact with.
 #[derive(Debug)]
 pub struct Process {
     /// Process ID of the tracee.
     pid: pid_t,
+    /// The current state of the tracee.
+    state: ProcessState,
 }
 
 impl Process {
@@ -63,7 +76,10 @@ impl Process {
             }
         }
 
-        let mut proc = Self { pid };
+        let mut proc = Self {
+            pid,
+            state: ProcessState::Stopped,
+        };
 
         // Wait for the child process to halt.
         proc.wait_on_signal()?;
@@ -87,7 +103,10 @@ impl Process {
             return Err(errno!("failed to attach to provided pid '{}'", pid));
         }
 
-        let mut proc = Self { pid };
+        let mut proc = Self {
+            pid,
+            state: ProcessState::Stopped,
+        };
 
         // Wait for the child process to halt.
         proc.wait_on_signal()?;
@@ -110,6 +129,8 @@ impl Process {
             return Err(errno!("failed to resume execution for tracee"));
         }
 
+        self.state = ProcessState::Running;
+
         Ok(())
     }
 
@@ -123,11 +144,29 @@ impl Process {
             return Err(errno!("failed to wait on tracee"));
         }
 
+        if WIFEXITED(wait_status) {
+            // Child process terminated normally.
+            self.state = ProcessState::Exited;
+        } else if WIFSIGNALED(wait_status) {
+            // Child process was terminated by a signal.
+            self.state = ProcessState::Terminated;
+        } else if WIFSTOPPED(wait_status) {
+            // Child process was stopped by delivery of a signal.
+            self.state = ProcessState::Stopped;
+        } else {
+            eprintln!("no matches on state change");
+        }
+
         Ok(())
     }
 
     /// Return the process ID of the given [`Process`].
     pub fn pid(&self) -> pid_t {
         self.pid
+    }
+
+    /// Return the current state of the given [`Process`].
+    pub fn state(&self) -> ProcessState {
+        self.state
     }
 }
