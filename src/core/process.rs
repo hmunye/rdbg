@@ -1,20 +1,13 @@
 use std::{ffi, ptr};
 
+use crate::utils::log_err;
 use crate::{Result, errno};
 
 use libc::{
     PTRACE_ATTACH, PTRACE_CONT, PTRACE_DETACH, PTRACE_TRACEME, SIGCONT, SIGKILL, SIGSTOP,
-    WIFEXITED, WIFSIGNALED, WIFSTOPPED, c_void, pid_t,
+    WEXITSTATUS, WIFEXITED, WIFSIGNALED, WIFSTOPPED, WSTOPSIG, WTERMSIG, c_char, c_int, c_void,
+    pid_t,
 };
-
-/// Represents the current state of a [`Process`].
-#[derive(Debug, PartialEq, Copy, Clone)]
-pub enum ProcessState {
-    Stopped,
-    Running,
-    Exited,
-    Terminated,
-}
 
 /// Represents a tracee [`Process`] the debugger can interact with.
 #[derive(Debug)]
@@ -26,6 +19,104 @@ pub struct Process {
     terminate: bool,
     /// The current state of the tracee.
     state: ProcessState,
+}
+
+/// Represents the current state of a [`Process`].
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum ProcessState {
+    Stopped,
+    Running,
+    Exited,
+    Terminated,
+}
+
+/// Holds information on why a [`Process`] was stopped, whether due to an exit,
+/// termination, or halt.
+#[derive(Debug)]
+pub struct StopReason {
+    /// The current state of the [`Process`].
+    pub reason: ProcessState,
+    /// Additional code associated with the stop, such as a signal or exit code.
+    pub info: c_int,
+}
+
+impl StopReason {
+    /// Parse the `wait_status`, populated by [`libc::waitpid`], returning a new
+    /// [`StopReason`].
+    fn new(wait_status: c_int) -> Self {
+        let reason: ProcessState;
+        let info: c_int;
+
+        if WIFEXITED(wait_status) {
+            // Child process terminated normally.
+            reason = ProcessState::Exited;
+            info = WEXITSTATUS(wait_status);
+        } else if WIFSIGNALED(wait_status) {
+            // Child process was terminated by a signal.
+            reason = ProcessState::Terminated;
+            info = WTERMSIG(wait_status);
+        } else if WIFSTOPPED(wait_status) {
+            // Child process was stopped by delivery of a signal.
+            reason = ProcessState::Stopped;
+            info = WSTOPSIG(wait_status);
+        } else {
+            log_err(
+                "rdbg",
+                format!("could not retrieve reason and info for wait_status '{wait_status}'"),
+            );
+
+            reason = ProcessState::Stopped;
+            info = -1;
+        }
+
+        Self { reason, info }
+    }
+
+    /// Log details of the [`StopReason`] for the given [`Process`].
+    pub fn log_stop_reason(&self, proc: &Process) {
+        match self.reason {
+            ProcessState::Exited => {
+                println!("process {} exited with status {}", proc.pid, self.info);
+            }
+            ProcessState::Terminated => {
+                let signal = {
+                    // Returns a string describing the signal number provided.
+                    let ptr = unsafe { libc::strsignal(self.info) };
+
+                    if ptr.is_null() {
+                        "UNKNOWN"
+                    } else {
+                        let c_str = unsafe { ffi::CStr::from_ptr(ptr as *const c_char) };
+                        c_str.to_str().unwrap_or("UNKNOWN")
+                    }
+                };
+
+                println!("process {} terminated with signal {}", proc.pid, signal);
+            }
+            ProcessState::Stopped => {
+                let signal = {
+                    // Returns a string describing the signal number provided.
+                    let ptr = unsafe { libc::strsignal(self.info) };
+
+                    if ptr.is_null() {
+                        "UNKNOWN"
+                    } else {
+                        let c_str = unsafe { ffi::CStr::from_ptr(ptr as *const c_char) };
+
+                        c_str.to_str().unwrap_or("UNKNOWN")
+                    }
+                };
+
+                println!("process {} stopped with signal {}", proc.pid, signal);
+            }
+            _ => {
+                log_err(
+                    "rdbg",
+                    format!("provided invalid stop_reason reason '{:?}'", self.reason),
+                );
+            }
+        }
+    }
 }
 
 impl Process {
@@ -72,7 +163,7 @@ impl Process {
                 libc::execlp(
                     program_path.as_ptr(),
                     program_path.as_ptr(),
-                    ptr::null_mut::<c_void>(),
+                    ptr::null_mut::<c_char>(),
                 )
             } < 0
             {
@@ -140,8 +231,8 @@ impl Process {
         Ok(())
     }
 
-    /// Wait on a state change for the given [`Process`].
-    pub fn wait_on_signal(&mut self) -> Result<()> {
+    /// Wait on a state change for the given [`Process`], returning a new [`StopReason`]
+    pub fn wait_on_signal(&mut self) -> Result<StopReason> {
         let mut wait_status = 0;
         let options = 0;
 
@@ -150,20 +241,10 @@ impl Process {
             return Err(errno!("failed to wait on tracee"));
         }
 
-        if WIFEXITED(wait_status) {
-            // Child process terminated normally.
-            self.state = ProcessState::Exited;
-        } else if WIFSIGNALED(wait_status) {
-            // Child process was terminated by a signal.
-            self.state = ProcessState::Terminated;
-        } else if WIFSTOPPED(wait_status) {
-            // Child process was stopped by delivery of a signal.
-            self.state = ProcessState::Stopped;
-        } else {
-            eprintln!("no matches on state change");
-        }
+        let reason = StopReason::new(wait_status);
+        self.state = reason.reason;
 
-        Ok(())
+        Ok(reason)
     }
 
     /// Return the process ID of the given [`Process`].

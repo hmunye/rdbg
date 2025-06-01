@@ -37,7 +37,9 @@ fn main() {
         }
 
         // Don't include line feed in buffer slice.
-        if let Err(err) = handle_command(&mut proc, &buffer[..=buffer.len()]) {
+        let slice = buffer.strip_suffix('\n').unwrap_or(&buffer[..]);
+
+        if let Err(err) = handle_command(&mut proc, slice) {
             log_err(&opts.tracer, err);
         };
 

@@ -4,4 +4,4 @@ mod command;
 mod process;
 
 pub use command::handle_command;
-pub use process::Process;
+pub use process::{Process, StopReason};

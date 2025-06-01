@@ -3,5 +3,5 @@
 /// Convenient wrapper around `Result` for `rdbg::Error`.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Represents errors that can occur during the debugging.
+/// Represents errors that can occur during the debugging process.
 pub type Error = Box<dyn std::error::Error>;
