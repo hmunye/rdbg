@@ -3,7 +3,8 @@ use std::{ffi, ptr};
 use crate::{Result, errno};
 
 use libc::{
-    PTRACE_ATTACH, PTRACE_CONT, PTRACE_TRACEME, WIFEXITED, WIFSIGNALED, WIFSTOPPED, c_void, pid_t,
+    PTRACE_ATTACH, PTRACE_CONT, PTRACE_DETACH, PTRACE_TRACEME, SIGCONT, SIGKILL, SIGSTOP,
+    WIFEXITED, WIFSIGNALED, WIFSTOPPED, c_void, pid_t,
 };
 
 /// Represents the current state of a [`Process`].
@@ -20,6 +21,9 @@ pub enum ProcessState {
 pub struct Process {
     /// Process ID of the tracee.
     pid: pid_t,
+    /// Flag to determine whether to clean up the tracee. Set to `true` if created
+    /// through [`Process::launch`].
+    terminate: bool,
     /// The current state of the tracee.
     state: ProcessState,
 }
@@ -78,6 +82,7 @@ impl Process {
 
         let mut proc = Self {
             pid,
+            terminate: true,
             state: ProcessState::Stopped,
         };
 
@@ -105,6 +110,7 @@ impl Process {
 
         let mut proc = Self {
             pid,
+            terminate: true,
             state: ProcessState::Stopped,
         };
 
@@ -168,5 +174,39 @@ impl Process {
     /// Return the current state of the given [`Process`].
     pub fn state(&self) -> ProcessState {
         self.state
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        if self.pid != 0 {
+            let pid = self.pid;
+            let mut status = 0;
+
+            unsafe {
+                if self.state == ProcessState::Running {
+                    // Send a signal to the tracee to stop execution.
+                    libc::kill(pid, SIGSTOP);
+                    // Wait for a state change from the tracee.
+                    libc::waitpid(pid, &mut status, 0);
+                }
+
+                // Detach from the tracee, then restart execution.
+                libc::ptrace(
+                    PTRACE_DETACH,
+                    pid,
+                    ptr::null_mut::<c_void>(),
+                    ptr::null_mut::<c_void>(),
+                );
+                // Send a signal to tracee to ensure it continues execution.
+                libc::kill(pid, SIGCONT);
+
+                // Terminate tracee if it was spawned due to [`Process::launch`].
+                if self.terminate {
+                    libc::kill(pid, SIGKILL);
+                    libc::waitpid(pid, &mut status, 0);
+                }
+            }
+        }
     }
 }
