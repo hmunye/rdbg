@@ -1,3 +1,4 @@
+use std::io::{self, BufRead, Write};
 use std::{ffi, ptr};
 
 use rdbg::utils::log_err;
@@ -27,6 +28,36 @@ fn main() {
         );
         std::process::exit(1);
     }
+
+    let mut stdin = io::stdin().lock();
+    let mut buffer = String::with_capacity(128);
+
+    loop {
+        print!("\x1b[1;32mrdbg\x1b[0m ❯ ");
+        io::stdout().flush().expect("failed to flush stdout");
+
+        let br = stdin.read_line(&mut buffer).unwrap_or_else(|err| {
+            log_err(&opts.tracer, err);
+            std::process::exit(1);
+        });
+
+        if br == 0 {
+            break;
+        }
+
+        handle_command(&buffer).unwrap_or_else(|err| {
+            log_err(&opts.tracer, err);
+            std::process::exit(1);
+        });
+
+        // Need to manually clear buffer.
+        buffer.clear();
+    }
+}
+
+fn handle_command(input: &String) -> Result<()> {
+    println!("input: {input}");
+    Ok(())
 }
 
 fn attach(pid: pid_t, tracee: String) -> Result<pid_t> {
