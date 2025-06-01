@@ -1,23 +1,24 @@
 use std::io::{self, BufRead, Write};
-use std::{ffi, ptr};
 
+use rdbg::core::Process;
 use rdbg::utils::log_err;
-use rdbg::{Config, Result, errno};
-
-use libc::{PTRACE_ATTACH, PTRACE_CONT, PTRACE_TRACEME, c_void, pid_t};
+use rdbg::{Config, Result};
 
 fn main() {
     let opts = Config::parse();
 
-    let pid = attach(opts.pid, opts.tracee).unwrap_or_else(|err| {
-        log_err(&opts.tracer, err);
-        std::process::exit(1);
-    });
-
-    wait_on_signal(pid).unwrap_or_else(|err| {
-        log_err(&opts.tracer, err);
-        std::process::exit(1);
-    });
+    let mut proc = match opts.pid {
+        // -- Process ID provided
+        1.. => Process::attach(opts.pid).unwrap_or_else(|err| {
+            log_err(&opts.tracer, err);
+            std::process::exit(1);
+        }),
+        // -- Program path provided
+        _ => Process::launch(opts.tracee).unwrap_or_else(|err| {
+            log_err(&opts.tracer, err);
+            std::process::exit(1);
+        }),
+    };
 
     let mut stdin = io::stdin().lock();
     let mut buffer = String::with_capacity(128);
@@ -36,131 +37,24 @@ fn main() {
         }
 
         // Don't include line feed in buffer slice.
-        handle_command(pid, &buffer[..=buffer.len()]).unwrap_or_else(|err| {
+        if let Err(err) = handle_command(&mut proc, &buffer[..=buffer.len()]) {
             log_err(&opts.tracer, err);
-            // continue loop...
-        });
+        };
 
         // Need to manually clear buffer.
         buffer.clear();
     }
 }
 
-fn handle_command(pid: pid_t, input: &str) -> Result<()> {
+fn handle_command(proc: &mut Process, input: &str) -> Result<()> {
     let command = input.split(' ').next().unwrap();
 
     if "continue".starts_with(command) {
-        resume(pid)?;
-        wait_on_signal(pid)?;
+        proc.resume()?;
+        proc.wait_on_signal()?;
     } else {
         return Err(format!("unrecognized command '{command}'").into());
     }
 
     Ok(())
-}
-
-fn resume(pid: pid_t) -> Result<()> {
-    // Restart the stopped tracee process. `addr` argument is ignored.
-    if unsafe {
-        libc::ptrace(
-            PTRACE_CONT,
-            pid,
-            ptr::null_mut::<c_void>(),
-            ptr::null_mut::<c_void>(),
-        )
-    } < 0
-    {
-        return Err(errno!("failed to resume execution for tracee"));
-    }
-
-    Ok(())
-}
-
-fn wait_on_signal(pid: pid_t) -> Result<()> {
-    let mut wait_status = 0;
-    let options = 0;
-
-    // Wait for state changes in the child process.
-    if unsafe { libc::waitpid(pid, &mut wait_status, options) } < 0 {
-        return Err(errno!("failed to wait on tracee"));
-    }
-
-    Ok(())
-}
-
-fn attach(pid: pid_t, tracee: String) -> Result<pid_t> {
-    match pid {
-        // -- Process ID provided
-        1.. => {
-            // Attach to the process specified by `pid`, making it a tracee
-            // of the debugger process. The tracee is sent a SIGSTOP signal.
-            if unsafe {
-                libc::ptrace(
-                    PTRACE_ATTACH,
-                    pid,
-                    ptr::null_mut::<c_void>(),
-                    ptr::null_mut::<c_void>(),
-                )
-            } < 0
-            {
-                return Err(errno!("failed to attach to provided pid '{}'", pid));
-            }
-
-            Ok(pid)
-        }
-        // -- Program path provided
-        _ => {
-            let pid = {
-                // Creates a new child process by duplicating the debugger process.
-                // On success, the PID of the child process is returned in the debugger
-                // process, and 0 is returned in the child.
-                let ret = unsafe { libc::fork() };
-
-                if ret < 0 {
-                    return Err(errno!("failed to fork parent process"));
-                }
-
-                ret
-            };
-
-            if pid == 0 {
-                // Within child process...
-
-                // Indicate that the child process can be traced by the debugger
-                // process. `pid`, `addr`, and `data` arguments are ignored.
-                if unsafe {
-                    libc::ptrace(
-                        PTRACE_TRACEME,
-                        0,
-                        ptr::null_mut::<c_void>(),
-                        ptr::null_mut::<c_void>(),
-                    )
-                } < 0
-                {
-                    return Err(errno!("failed to trace child process"));
-                }
-
-                let program_path = ffi::CString::new(tracee)
-                    .map_err(|err| format!("failed to convert tracee program path: {err}"))?;
-
-                // Replaces the debugger process image with a new process image.
-                // `execlp` searches for the program in the same way as the current
-                // shell if it does not contain a slash (/). Arguments are accepted
-                // individually instead of as an array.
-                if unsafe {
-                    libc::execlp(
-                        program_path.as_ptr(),
-                        program_path.as_ptr(),
-                        ptr::null_mut::<c_void>(),
-                    )
-                } < 0
-                {
-                    return Err(errno!("failed to exec within child process"));
-                }
-            }
-
-            // Process ID of the child process
-            Ok(pid)
-        }
-    }
 }

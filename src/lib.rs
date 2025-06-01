@@ -6,6 +6,7 @@
 mod config;
 mod error;
 
+pub mod core;
 pub mod utils;
 
 pub use config::Config;
