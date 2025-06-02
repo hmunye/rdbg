@@ -347,8 +347,8 @@ mod tests {
 
     fn get_process_status(pid: pid_t) -> char {
         // The `/proc` directory in Linux is a virtual filesystem that stores
-        // information about processes and other systems activities, organized
-        // as files.
+        // information about processes and other systems activities (Linux `procfs`),
+        // organized as files.
         //
         // The `/proc/[pid]/stat` file gives high-level information on the
         // current state of a given process.
