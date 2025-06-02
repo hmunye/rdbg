@@ -3,7 +3,9 @@ use crate::core::Process;
 
 /// Process an input command for a given [`Process`].
 pub fn handle_command(proc: &mut Process, input: &str) -> Result<()> {
-    let command = input.split(' ').next().unwrap();
+    let mut parts = input.split(' ');
+
+    let command = parts.next().unwrap_or("");
 
     if "continue".starts_with(command) {
         proc.resume()?;

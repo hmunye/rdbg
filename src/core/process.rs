@@ -20,6 +20,8 @@ pub struct Process {
     terminate: bool,
     /// The current state of the tracee.
     state: ProcessState,
+    /// Indicates whether the process has been attached to (used during cleanup).
+    is_attached: bool,
 }
 
 /// Represents the current state of a [`Process`].
@@ -122,7 +124,10 @@ impl StopReason {
 
 impl Process {
     /// Begin tracing a program given it's path, returning a new [`Process`].
-    pub fn launch(tracee_path: String) -> Result<Self> {
+    ///
+    /// When `true`, the `debug` parameter indicates that the process should be
+    /// attached to, otherwise the program is just launched.
+    pub fn launch(tracee_path: String, debug: bool) -> Result<Self> {
         // Create pipe before forking to communicate errors between debugger
         // process and child process. Pass `true` to ensure file descriptors are
         // automatically closed.
@@ -145,16 +150,18 @@ impl Process {
             // Within child process...
             channel.close_read();
 
-            // Indicate that the child process can be traced by the debugger
-            // process. `pid`, `addr`, and `data` arguments are ignored.
-            if unsafe {
-                libc::ptrace(
-                    PTRACE_TRACEME,
-                    0,
-                    ptr::null_mut::<c_void>(),
-                    ptr::null_mut::<c_void>(),
-                )
-            } < 0
+            // Guard the `PTRACE_TRACEME` call so it only runs when requested.
+            if debug
+                && unsafe {
+                    // Indicate that the child process can be traced by the debugger
+                    // process. `pid`, `addr`, and `data` arguments are ignored.
+                    libc::ptrace(
+                        PTRACE_TRACEME,
+                        0,
+                        ptr::null_mut::<c_void>(),
+                        ptr::null_mut::<c_void>(),
+                    )
+                } < 0
             {
                 let msg: String = errno!("failed to trace child process");
                 // TODO: Write could fail...
@@ -207,10 +214,14 @@ impl Process {
             pid,
             terminate: true,
             state: ProcessState::Stopped,
+            is_attached: debug,
         };
 
-        // Wait for the child process to halt.
-        proc.wait_on_signal()?;
+        // Guard the `wait_on_signal` call so it only runs when requested
+        if debug {
+            // Wait for the child process to halt.
+            proc.wait_on_signal()?;
+        }
 
         Ok(proc)
     }
@@ -235,6 +246,7 @@ impl Process {
             pid,
             terminate: true,
             state: ProcessState::Stopped,
+            is_attached: true,
         };
 
         // Wait for the child process to halt.
@@ -297,22 +309,24 @@ impl Drop for Process {
             let mut status = 0;
 
             unsafe {
-                if self.state == ProcessState::Running {
-                    // Send a signal to the tracee to stop execution.
-                    libc::kill(pid, SIGSTOP);
-                    // Wait for a state change from the tracee.
-                    libc::waitpid(pid, &mut status, 0);
-                }
+                if self.is_attached {
+                    if self.state == ProcessState::Running {
+                        // Send a signal to the tracee to stop execution.
+                        libc::kill(pid, SIGSTOP);
+                        // Wait for a state change from the tracee.
+                        libc::waitpid(pid, &mut status, 0);
+                    }
 
-                // Detach from the tracee, then restart execution.
-                libc::ptrace(
-                    PTRACE_DETACH,
-                    pid,
-                    ptr::null_mut::<c_void>(),
-                    ptr::null_mut::<c_void>(),
-                );
-                // Send a signal to tracee to ensure it continues execution.
-                libc::kill(pid, SIGCONT);
+                    // Detach from the tracee, then restart execution.
+                    libc::ptrace(
+                        PTRACE_DETACH,
+                        pid,
+                        ptr::null_mut::<c_void>(),
+                        ptr::null_mut::<c_void>(),
+                    );
+                    // Send a signal to tracee to ensure it continues execution.
+                    libc::kill(pid, SIGCONT);
+                }
 
                 // Terminate tracee if it was spawned due to [`Process::launch`].
                 if self.terminate {
@@ -326,30 +340,131 @@ impl Drop for Process {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::io;
+
     use super::*;
+
+    fn get_process_status(pid: pid_t) -> char {
+        // The `/proc` directory in Linux is a virtual filesystem that stores
+        // information about processes and other systems activities, organized
+        // as files.
+        //
+        // The `/proc/[pid]/stat` file gives high-level information on the
+        // current state of a given process.
+        let stats = fs::read_to_string(format!("/proc/{pid}/stat"))
+            .unwrap_or_else(|err| panic!("failed to read proc stats for /proc/{pid}/stat': {err}"));
+
+        let last_paren_idx = stats
+            .rfind(')')
+            .unwrap_or_else(|| panic!("unexpected format for /proc/{pid}/stat"));
+
+        // Return the state indicator.
+        stats
+            .chars()
+            .nth(last_paren_idx + 2) // located right after the closing parenthesis + 2
+            .unwrap_or_else(|| panic!("process state indicator missing for /proc/{pid}/stat"))
+    }
 
     fn check_pid(pid: pid_t) -> bool {
         // If signal is 0, then no signal is sent, but existence and permission
         // checks are still performed on the given `pid`.
         let ret = unsafe { libc::kill(pid, 0) };
 
-        let errno = std::io::Error::last_os_error().to_string();
+        let errno = io::Error::last_os_error().to_string();
 
         ret != -1 && !errno.contains("No such process")
     }
 
     #[test]
     fn process_exists() {
-        let proc = Process::launch("yes".to_string());
+        let proc = Process::launch("yes".to_string(), true);
+        assert_eq!(proc.is_ok(), true);
 
-        assert!(proc.is_ok());
-        assert!(check_pid(proc.unwrap().pid()));
+        assert_eq!(check_pid(proc.unwrap().pid()), true);
     }
 
     #[test]
     fn process_not_exists() {
-        let proc = Process::launch("this_program_does_not_exist".to_string());
+        let proc = Process::launch("this_program_does_not_exist".to_string(), true);
+        assert_eq!(proc.is_err(), true);
+    }
 
-        assert!(proc.is_err());
+    #[test]
+    fn process_attach_valid() {
+        // Does not request to trace the process.
+        let target = Process::launch("target/debug/run".to_string(), false);
+        assert_eq!(target.is_ok(), true);
+
+        let target = target.unwrap();
+
+        let proc = Process::attach(target.pid());
+        assert_eq!(proc.is_ok(), true);
+
+        // 't' indicates tracing has stopped for the process
+        // (since `attach` sends SIGSTOP signal).
+        assert_eq!(get_process_status(target.pid()), 't')
+    }
+
+    #[test]
+    fn process_attach_invalid_pid() {
+        let proc = Process::attach(0);
+        assert_eq!(proc.is_err(), true);
+    }
+
+    #[test]
+    fn process_resume_valid() {
+        // Test: launch process and trace, then resume.
+        {
+            let proc = Process::launch("target/debug/run".to_string(), true);
+            assert_eq!(proc.is_ok(), true);
+
+            let mut proc = proc.unwrap();
+
+            assert_eq!(proc.resume().is_ok(), true);
+
+            // 'R' indicates the process is running and 'S' indicates the process
+            // is sleeping in an interruptible wait (waiting to be scheduled by OS).
+            assert_eq!(
+                get_process_status(proc.pid()) == 'R' || get_process_status(proc.pid()) == 'S',
+                true
+            )
+        }
+
+        // Test: launch process, attach, then resume.
+        {
+            // Does not request to trace the process.
+            let target = Process::launch("target/debug/run".to_string(), false);
+            assert_eq!(target.is_ok(), true);
+
+            let target = target.unwrap();
+
+            let proc = Process::attach(target.pid());
+            assert_eq!(proc.is_ok(), true);
+
+            let mut proc = proc.unwrap();
+
+            assert_eq!(proc.resume().is_ok(), true);
+
+            // 'R' indicates the process is running and 'S' indicates the process
+            // is sleeping in an interruptible wait (waiting to be scheduled by OS).
+            assert_eq!(
+                get_process_status(proc.pid()) == 'R' || get_process_status(proc.pid()) == 'S',
+                true
+            )
+        }
+    }
+
+    #[test]
+    fn process_resume_invalid() {
+        let proc = Process::launch("target/debug/end".to_string(), true);
+        assert_eq!(proc.is_ok(), true);
+
+        let mut proc = proc.unwrap();
+
+        assert_eq!(proc.resume().is_ok(), true);
+        assert_eq!(proc.wait_on_signal().is_ok(), true);
+
+        assert_eq!(proc.resume().is_err(), true);
     }
 }

@@ -14,7 +14,7 @@ fn main() {
             std::process::exit(1);
         }),
         // -- Program path provided
-        _ => Process::launch(opts.tracee).unwrap_or_else(|err| {
+        _ => Process::launch(opts.tracee, true).unwrap_or_else(|err| {
             log_err(&opts.tracer, err);
             std::process::exit(1);
         }),
