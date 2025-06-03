@@ -1,4 +1,4 @@
-//! Responsible for collecting, parsing, and validating command-line arguments.
+//! Collects, parses, and validates command-line arguments.
 
 use std::{env, process};
 

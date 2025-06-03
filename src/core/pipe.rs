@@ -1,12 +1,13 @@
 use std::mem;
 
-use crate::{Result, errno};
+use crate::Result;
+use crate::utils::errno;
 
 use libc::{O_CLOEXEC, c_int, c_void};
 
 /// Wrapper around [`libc::pipe`] API.
 #[derive(Debug)]
-pub struct Pipe {
+pub(crate) struct Pipe {
     /// Read file descriptor of the pipe.
     read_fd: c_int,
     /// Write file descriptor of the pipe.
@@ -23,7 +24,7 @@ impl Pipe {
     ///
     /// This is for cases where the child process is expected to replace the
     /// process image, and duplicate file handles are not wanted.
-    pub fn new(close_on_exec: bool) -> Result<Self> {
+    pub(crate) fn new(close_on_exec: bool) -> Result<Self> {
         let mut fds = [0i32; 2];
 
         // Set the close-on-exec (FD_CLOEXEC) flag on the two new file
@@ -45,7 +46,7 @@ impl Pipe {
 
     /// Reads a 1024 byte chunk from the given [`Pipe`], returning the fixed-size
     /// buffer, and number of bytes read as a tuple.
-    pub fn read(&self) -> Result<([u8; 1024], usize)> {
+    pub(crate) fn read(&self) -> Result<([u8; 1024], usize)> {
         let mut buffer = [0u8; 1024];
 
         // Read up to `buffer.len()` bytes from the file descriptor into `buffer`.
@@ -65,7 +66,7 @@ impl Pipe {
     }
 
     /// Write the given byte buffer into [`Pipe`].
-    pub fn write(&self, buffer: &[u8]) -> Result<()> {
+    pub(crate) fn write(&self, buffer: &[u8]) -> Result<()> {
         // Writes up to `buffer.len()` bytes from `buffer` to the file descriptor.
         if unsafe {
             libc::write(
@@ -82,7 +83,7 @@ impl Pipe {
     }
 
     /// Close the `read` end of the given [`Pipe`].
-    pub fn close_read(&mut self) {
+    pub(crate) fn close_read(&mut self) {
         if self.fds[self.read_fd as usize] != -1 {
             unsafe {
                 // Closes the file descriptor, so that it no longer refers to any
@@ -95,7 +96,7 @@ impl Pipe {
     }
 
     /// Close the `write` end of the given [`Pipe`].
-    pub fn close_write(&mut self) {
+    pub(crate) fn close_write(&mut self) {
         if self.fds[self.write_fd as usize] != -1 {
             unsafe {
                 // Closes the file descriptor, so that it no longer refers to any

@@ -1,8 +1,8 @@
 use std::{ffi, ptr};
 
 use super::Pipe;
-use crate::utils::log_err;
-use crate::{Result, errno};
+use crate::Result;
+use crate::utils::{errno, log_err};
 
 use libc::{
     PTRACE_ATTACH, PTRACE_CONT, PTRACE_DETACH, PTRACE_TRACEME, SIGCONT, SIGKILL, SIGSTOP,

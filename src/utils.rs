@@ -1,14 +1,15 @@
-//! Shared helper utilities.
+//! Helper utilities.
 
 use std::fmt;
 
-/// Macro for appending current `errno` value to an error message.
-#[macro_export]
+// Macro for appending current `errno` value to a message.
 macro_rules! errno {
     ($($arg:tt)*) => {
         format!("{}: {}", format!($($arg)*), std::io::Error::last_os_error()).into()
     };
 }
+
+pub(crate) use errno;
 
 /// Logs errors to standard error in a structured format.
 pub fn log_err<E>(program: &str, err: E)

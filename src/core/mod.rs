@@ -1,9 +1,14 @@
 //! Core library implementation of the debugger.
 
 mod command;
-mod pipe;
-mod process;
-
 pub use command::handle_command;
-pub use pipe::Pipe;
+
+mod process;
 pub use process::{Process, StopReason};
+
+mod pipe;
+pub(crate) use pipe::Pipe;
+
+mod register;
+#[allow(unused_imports)]
+pub(crate) use register::{RegisterFormat, RegisterInfo, RegisterType};

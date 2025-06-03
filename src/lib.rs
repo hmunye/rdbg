@@ -3,11 +3,11 @@
 #![deny(missing_docs, missing_debug_implementations, unreachable_pub)]
 #![warn(rust_2018_idioms)]
 
-mod config;
-mod error;
-
 pub mod core;
 pub mod utils;
 
+mod config;
 pub use config::Config;
+
+mod error;
 pub use error::{Error, Result};
